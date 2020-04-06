@@ -40,6 +40,7 @@ volatile char but1_flag;
 volatile char but2_flag;
 volatile char but3_flag;
 volatile Bool f_rtt_alarme = false;
+volatile char flag_tc = 0;
 
 void but1_callback();
 void but2_callback();
@@ -64,7 +65,56 @@ void pin_toggle(Pio *pio, uint32_t mask){
 	pio_set(pio,mask);
 }
 
-void RTT_Handler(){
+static float get_time_rtt(){
+	uint ul_previous_time = rtt_read_timer_value(RTT);
+}
+
+void TC1_Handler(void){
+	volatile uint32_t ul_dummy;
+
+	/****************************************************************
+	* Devemos indicar ao TC que a interrupção foi satisfeita.
+	******************************************************************/
+	ul_dummy = tc_get_status(TC0, 1);
+
+	/* Avoid compiler warning */
+	UNUSED(ul_dummy);
+
+	/** Muda o estado do LED */
+	flag_tc = 1;
+}
+
+void TC_init(Tc * TC, int ID_TC, int TC_CHANNEL, int freq){
+	uint32_t ul_div;
+	uint32_t ul_tcclks;
+	uint32_t ul_sysclk = sysclk_get_cpu_hz();
+
+	/* Configura o PMC */
+	/* O TimerCounter é meio confuso
+	o uC possui 3 TCs, cada TC possui 3 canais
+	TC0 : ID_TC0, ID_TC1, ID_TC2
+	TC1 : ID_TC3, ID_TC4, ID_TC5
+	TC2 : ID_TC6, ID_TC7, ID_TC8
+	*/
+	pmc_enable_periph_clk(ID_TC);
+
+	/** Configura o TC para operar em  4Mhz e interrupçcão no RC compare */
+	tc_find_mck_divisor(freq, ul_sysclk, &ul_div, &ul_tcclks, ul_sysclk);
+	tc_init(TC, TC_CHANNEL, ul_tcclks | TC_CMR_CPCTRG);
+	tc_write_rc(TC, TC_CHANNEL, (ul_sysclk / ul_div) / freq);
+
+	/* Configura e ativa interrupçcão no TC canal 0 */
+	/* Interrupção no C */
+	NVIC_EnableIRQ((IRQn_Type) ID_TC);
+	tc_enable_interrupt(TC, TC_CHANNEL, TC_IER_CPCS);
+
+	/* Inicializa o canal 0 do TC */
+	tc_start(TC, TC_CHANNEL);
+}
+
+
+void RTT_Handler(void)
+{
 	uint32_t ul_status;
 
 	/* Get RTT status - ACK */
@@ -74,6 +124,7 @@ void RTT_Handler(){
 	if ((ul_status & RTT_SR_RTTINC) == RTT_SR_RTTINC) {
 		//f_rtt_alarme = false;
 		pin_toggle(LED2_PIO, LED2_PIO_IDX_MASK);    // BLINK Led
+		
 	}
 
 	/* IRQ due to Alarm */
@@ -87,6 +138,10 @@ void init_LED(){
 	pmc_enable_periph_clk(LED1_PIO_ID);
 	pmc_enable_periph_clk(LED2_PIO_ID);
 	pmc_enable_periph_clk(LED3_PIO_ID);
+	
+	pio_configure(LED1_PIO, PIO_OUTPUT_0, LED1_PIO_IDX_MASK, PIO_DEFAULT);
+	pio_configure(LED2_PIO, PIO_OUTPUT_0, LED2_PIO_IDX_MASK, PIO_DEFAULT);
+	pio_configure(LED3_PIO, PIO_OUTPUT_0, LED3_PIO_IDX_MASK, PIO_DEFAULT);
 }
 
 void init_BUT(){
@@ -117,8 +172,7 @@ void init_BUT(){
 	but3_callback);
 }
 
-static void RTT_init(uint16_t pllPreScale, uint32_t IrqNPulses)
-{
+static void RTT_init(uint16_t pllPreScale, uint32_t IrqNPulses){
 	uint32_t ul_previous_time;
 
 	/* Configure RTT for a 1 second tick interrupt */
@@ -158,6 +212,7 @@ int main (void)
 	int freq_LED1 = 0;
 	int freq_LED2 = 0;
 	int freq_LED3 = 1;
+	f_rtt_alarme = true;
 	
 	while(1) {
 		if (f_rtt_alarme){
@@ -165,8 +220,8 @@ int main (void)
 			/*
 			* IRQ apos 4s -> 8*0.5
 			*/
-			uint16_t pllPreScale = (int) (((float) 32768) / 4.0);
-			uint32_t irqRTTvalue = 8;
+			uint16_t pllPreScale = (int) (((float) 32768) / 20);
+			uint32_t irqRTTvalue = 2;
 			
 			// reinicia RTT para gerar um novo IRQ
 			RTT_init(pllPreScale, irqRTTvalue);
